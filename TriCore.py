@@ -1,23 +1,24 @@
 import re
+from capstone import Cs, CS_MODE_32, CS_ARCH_TRICORE
 
 from binaryninja.log import log_info
 from binaryninja.architecture import Architecture
 from binaryninja.function import RegisterInfo, InstructionInfo, InstructionTextToken
-from binaryninja.enums import InstructionTextTokenType
-from capstone import Cs, CS_MODE_32, CS_ARCH_TRICORE
+from binaryninja.enums import InstructionTextTokenType, BranchType
 
 def TCdisasm(data, addr):
     md = Cs(CS_ARCH_TRICORE, CS_MODE_32)
     result = md.disasm(data, addr)
     for insn in result:
-        return (f'{insn.mnemonic} {insn.op_str}', insn.size)
+        return (f'{insn.mnemonic} {insn.op_str}'.strip(), insn.size)
+    return ('',0)
 
 
 class TriCore(Architecture):
     name = 'TriCore'
     address_size = 4
     default_int_size = 4
-    instr_alignment = 0
+    instr_alignment = 1
     max_instr_length = 4
 
     regs = {
@@ -83,7 +84,69 @@ class TriCore(Architecture):
             return None
         result = InstructionInfo()
         result.length = instrLen
-        return result
+
+        rccs = r'(?:d15|NC|Z|NZ|M|P|PE|PO)'
+        regexes = [ \
+            r'^j(?:lt|le|gt|ge)\.(?:u|s|a|w) d\d+, (?:#|d)\d+, #(?:0x[0-9a-fA-F]+|\d+)$',	# 0: conditional jump
+            r'^j(?:lt|le|gt|ge) d\d+, (?:#|d)\d+, #(?:0x[0-9a-fA-F]+|\d+)$',	# 1: conditional jump
+            r'^j(?:eq|ne) d\d+, (?:d|#)[0-9a-fA-F]+, #(?:0x[0-9a-fA-F]+|\d+)$',	# 2: conditional jump (not\equal)
+            r'^j(?:z|nz) d\d+, #(?:0x[0-9a-fA-F]+|\d+)$',	# 3: conditional jump (not\zero)
+            r'^j #0x[0-9a-fA-F]+$',				# 4: jump unconditional
+            r'call #0x[0-9a-fA-F]+$',					# 5: unconditional call		eg: CALL #DEAD
+            r'loop a\d+, #-[0-9a-fA-F]+$',					# 6: loop
+            r'loop a\d+, #-0x[0-9a-fA-F]+$',					# 7: loop
+            r'(?:ret|retn|reti)',				# 8: return, return (nmi), return (interrupt)
+            
+        ]
+
+        m = None
+        for (i,regex) in enumerate(regexes):
+            m = re.match(regex, instrTxt)
+            if not m:
+                continue
+
+            # print(f'Matched! "{instrTxt}" {i}')
+            if i==0 or i==1 or i==2:
+                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', instrTxt)
+                dest = int(hex_match.group(1), 16)
+                result.add_branch(BranchType.TrueBranch, dest)
+                result.add_branch(BranchType.FalseBranch, addr + instrLen)
+                pass
+            if i==3:
+                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', instrTxt)
+                dest = int(hex_match.group(1), 16)
+                result.add_branch(BranchType.TrueBranch, dest)
+                result.add_branch(BranchType.FalseBranch, addr + instrLen)
+                pass
+            elif i==4:
+                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', instrTxt)
+                dest = int(hex_match.group(1), 16)
+                result.add_branch(BranchType.UnconditionalBranch, dest)
+                pass
+            elif i==5:
+                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', instrTxt)
+                dest = int(hex_match.group(1), 16)
+                result.add_branch(BranchType.CallDestination, dest)
+                pass
+            elif i==6:
+                hex_match = re.search(r'#(-[0-9a-fA-F]+)', instrTxt)
+                dest = int(hex_match.group(1))
+                result.add_branch(BranchType.TrueBranch, addr + dest)
+                result.add_branch(BranchType.FalseBranch, addr + instrLen)
+                pass
+            elif i==7:
+                hex_match = re.search(r'#(-0x[0-9a-fA-F]+)', instrTxt)
+                dest = int(hex_match.group(1), 16)
+                result.add_branch(BranchType.TrueBranch, addr + dest)
+                result.add_branch(BranchType.FalseBranch, addr + instrLen)
+                pass
+            elif i==8:
+                result.add_branch(BranchType.FunctionReturn)
+
+
+            break
+
+        return result 
     
     def get_instruction_text(self, data, addr):
         (instrTxt, instrLen) = TCdisasm(data, addr)
@@ -100,9 +163,6 @@ class TriCore(Architecture):
         for atom in atoms[1:]:
             if not atom or atom == ' ':
                 continue
-            elif atom == 'C' and atoms[0] in ['CALL','RET']:
-                # flag, condition code
-                result.append(InstructionTextToken(InstructionTextTokenType.TextToken, atom))
             elif atom in self.reg32_strs:
                 result.append(InstructionTextToken(InstructionTextTokenType.RegisterToken, atom))
             elif atom in self.cond_strs:
