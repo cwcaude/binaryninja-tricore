@@ -4,14 +4,28 @@ from capstone import Cs, CS_MODE_32, CS_ARCH_TRICORE
 from binaryninja.log import log_info
 from binaryninja.architecture import Architecture
 from binaryninja.function import RegisterInfo, InstructionInfo, InstructionTextToken
-from binaryninja.enums import InstructionTextTokenType, BranchType
+from binaryninja.enums import InstructionTextTokenType, BranchType, LowLevelILOperation, LowLevelILFlagCondition
+from binaryninja.lowlevelil import LowLevelILLabel, ILRegister, ILFlag, LLIL_TEMP, LLIL_GET_TEMP_REG_INDEX
+
+
+class disasmObj:
+    def __init__(self) -> None:
+        self.op = ''
+        self.insnTxt = ''
+        self.size = 0
+        self.status = False
 
 def TCdisasm(data, addr):
     md = Cs(CS_ARCH_TRICORE, CS_MODE_32)
     result = md.disasm(data, addr)
+    decoded = disasmObj()
     for insn in result:
-        return (f'{insn.mnemonic} {insn.op_str}'.strip(), insn.size)
-    return ('',0)
+        decoded.op = insn.mnemonic
+        decoded.insnTxt = f'{insn.mnemonic} {insn.op_str}'.strip()
+        decoded.size = insn.size
+        decoded.status = True
+        return decoded
+    return decoded
 
 
 class TriCore(Architecture):
@@ -19,7 +33,7 @@ class TriCore(Architecture):
     address_size = 4
     default_int_size = 4
     instr_alignment = 1
-    max_instr_length = 4
+    max_instr_length = 6
 
     regs = {
         # General Data Registers
@@ -78,11 +92,11 @@ class TriCore(Architecture):
     reg_strs = reg32_strs
 
     def get_instruction_info(self, data, addr):
-        (instrTxt, instrLen) = TCdisasm(data, addr)
-        if instrLen == 0:
+        decoded = TCdisasm(data, addr)
+        if decoded.size == 0:
             return None
         result = InstructionInfo()
-        result.length = instrLen
+        result.length = decoded.size
 
         regexes = [ \
             r'^j(?:lt|le|gt|ge)\.(?:u|s|a|w) d\d+, (?:#|d)\d+, #(?:0x[0-9a-fA-F]+|\d+)$',	# 0: conditional jump
@@ -99,44 +113,50 @@ class TriCore(Architecture):
 
         m = None
         for (i,regex) in enumerate(regexes):
-            m = re.match(regex, instrTxt)
+            m = re.match(regex, decoded.insnTxt)
             if not m:
                 continue
 
-            # print(f'Matched! "{instrTxt}" {i}')
-            if i==0 or i==1 or i==2:
-                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', instrTxt)
+            # print(f'Matched! "{decoded.insnTxt}" size: {decoded.size} {i}')
+            if i==0 or i==2:
+                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
                 dest = int(hex_match.group(1), 16)
                 result.add_branch(BranchType.TrueBranch, dest)
-                result.add_branch(BranchType.FalseBranch, addr + instrLen)
+                result.add_branch(BranchType.FalseBranch, addr + decoded.size)
+                pass
+            if i==1:
+                hex_match = re.search(r'#([0-9a-fA-F]+)', decoded.insnTxt)
+                dest = int(hex_match.group(1))
+                result.add_branch(BranchType.TrueBranch, dest)
+                result.add_branch(BranchType.FalseBranch, addr + decoded.size)
                 pass
             if i==3:
-                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', instrTxt)
+                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
                 dest = int(hex_match.group(1), 16)
                 result.add_branch(BranchType.TrueBranch, dest)
-                result.add_branch(BranchType.FalseBranch, addr + instrLen)
+                result.add_branch(BranchType.FalseBranch, addr + decoded.size)
                 pass
             elif i==4:
-                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', instrTxt)
+                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
                 dest = int(hex_match.group(1), 16)
                 result.add_branch(BranchType.UnconditionalBranch, dest)
                 pass
             elif i==5:
-                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', instrTxt)
+                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
                 dest = int(hex_match.group(1), 16)
                 result.add_branch(BranchType.CallDestination, dest)
                 pass
             elif i==6:
-                hex_match = re.search(r'#(-[0-9a-fA-F]+)', instrTxt)
+                hex_match = re.search(r'#(-[0-9a-fA-F]+)', decoded.insnTxt)
                 dest = int(hex_match.group(1))
                 result.add_branch(BranchType.TrueBranch, addr + dest)
-                result.add_branch(BranchType.FalseBranch, addr + instrLen)
+                result.add_branch(BranchType.FalseBranch, addr + decoded.size)
                 pass
             elif i==7:
-                hex_match = re.search(r'#(-0x[0-9a-fA-F]+)', instrTxt)
+                hex_match = re.search(r'#(-0x[0-9a-fA-F]+)', decoded.insnTxt)
                 dest = int(hex_match.group(1), 16)
                 result.add_branch(BranchType.TrueBranch, addr + dest)
-                result.add_branch(BranchType.FalseBranch, addr + instrLen)
+                result.add_branch(BranchType.FalseBranch, addr + decoded.size)
                 pass
             elif i==8:
                 result.add_branch(BranchType.FunctionReturn)
@@ -147,12 +167,12 @@ class TriCore(Architecture):
         return result 
     
     def get_instruction_text(self, data, addr):
-        (instrTxt, instrLen) = TCdisasm(data, addr)
-        if instrLen == 0:
+        decoded = TCdisasm(data, addr)
+        if decoded.size == 0:
             return None
         
         result = []
-        atoms = [t for t in re.split(r'([, ()\[\]\+])', instrTxt) if t] # delimeters kept if in capture group
+        atoms = [t for t in re.split(r'([, ()\[\]\+])', decoded.insnTxt) if t] # delimeters kept if in capture group
         result.append(InstructionTextToken(InstructionTextTokenType.InstructionToken, atoms[0]))
         if atoms[1:]:
             result.append(InstructionTextToken(InstructionTextTokenType.TextToken, ' '))
@@ -181,20 +201,28 @@ class TriCore(Architecture):
             elif atom == ',':
                 result.append(InstructionTextToken(InstructionTextTokenType.OperandSeparatorToken, atom))
             else:
-                raise Exception('unfamiliar token: %s from instruction %s' % (atom, instrTxt))
+                raise Exception('unfamiliar token: %s from instruction %s' % (atom, decoded.insnTxt))
         
-        return result, instrLen
+        return result, decoded.size
 
-    def get_instruction_low_level_il(self, data, addr, il:'lowlevelil.LowLevelILFunction'):
+    def get_instruction_low_level_il(self, data, addr, il):
         decoded = TCdisasm(data, addr)
 
-        if decoded.status != DECODE_STATUS.OK or decoded.len == 0:
+        return None
+
+        if decoded.status != True or decoded.size == 0:
             return None
         
-        expr = il.unimplemented()
+        expr = None
+
+        if decoded.op == 'nop':
+            expr = il.nop()
+        else:
+            expr = il.unimplemented()
+
         il.append(expr)
 
-        return decoded.len
+        return decoded.size
 
 
 TriCore.register() 
