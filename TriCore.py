@@ -163,8 +163,6 @@ class TriCore(Architecture):
                 continue
             elif atom in self.reg32_strs:
                 result.append(InstructionTextToken(InstructionTextTokenType.RegisterToken, atom))
-            elif atom in self.cond_strs:
-                result.append(InstructionTextToken(InstructionTextTokenType.TextToken, atom))
             elif atom[0] == '#':
                 result.append(InstructionTextToken(InstructionTextTokenType.IntegerToken, atom, int(atom[1:],16)))
             elif atom[0] == '$':
@@ -187,7 +185,16 @@ class TriCore(Architecture):
         
         return result, instrLen
 
-    def get_instruction_low_level_il(self, data, addr, il):
-        return None
+    def get_instruction_low_level_il(self, data, addr, il:'lowlevelil.LowLevelILFunction'):
+        decoded = TCdisasm(data, addr)
+
+        if decoded.status != DECODE_STATUS.OK or decoded.len == 0:
+            return None
+        
+        expr = il.unimplemented()
+        il.append(expr)
+
+        return decoded.len
+
 
 TriCore.register() 
