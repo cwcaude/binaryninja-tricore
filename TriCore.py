@@ -74,7 +74,6 @@ class TriCore(Architecture):
     stack_pointer = 'a10'
 
     # internal
-    cond_strs = ['C', 'NC', 'Z', 'NZ', 'M', 'P', 'PE', 'PO'] # TODO validate these cond_strs
     reg32_strs = ['d0', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8', 'd9', 'd10', 'd11', 'd12', 'd13', 'd14', 'd15', 'a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'a11', 'a12', 'a13', 'a14', 'a15', 'psw', 'pcxi', 'pc', 'fcx', 'lcx', 'isp', 'icr', 'pipn', 'biv', 'btv', ]
     reg_strs = reg32_strs
 
@@ -85,7 +84,6 @@ class TriCore(Architecture):
         result = InstructionInfo()
         result.length = instrLen
 
-        rccs = r'(?:d15|NC|Z|NZ|M|P|PE|PO)'
         regexes = [ \
             r'^j(?:lt|le|gt|ge)\.(?:u|s|a|w) d\d+, (?:#|d)\d+, #(?:0x[0-9a-fA-F]+|\d+)$',	# 0: conditional jump
             r'^j(?:lt|le|gt|ge) d\d+, (?:#|d)\d+, #(?:0x[0-9a-fA-F]+|\d+)$',	# 1: conditional jump
