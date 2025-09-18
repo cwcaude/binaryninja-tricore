@@ -7,7 +7,7 @@ from binaryninja.function import RegisterInfo, InstructionInfo, InstructionTextT
 from binaryninja.enums import InstructionTextTokenType, BranchType, LowLevelILOperation, LowLevelILFlagCondition
 from binaryninja.lowlevelil import LowLevelILLabel, ILRegister, ILFlag, LLIL_TEMP, LLIL_GET_TEMP_REG_INDEX
 
-
+current_base = 0x80000000 ## TODO: make dynamic based on BinaryView -> bv.start
 class disasmObj:
     def __init__(self) -> None:
         self.op = ''
@@ -54,6 +54,16 @@ class TriCore(Architecture):
         'd14' : RegisterInfo('d14', 4),
         'd15' : RegisterInfo('d15', 4),         # Implicit Data Register for many 16-bit load/store ins
 
+        # Extended data Registers
+        'e0' : RegisterInfo('e0', 8),
+        'e2' : RegisterInfo('e2', 8),
+        'e4' : RegisterInfo('e4', 8),
+        'e6' : RegisterInfo('e6', 8),
+        'e8' : RegisterInfo('e8', 8),
+        'e10' : RegisterInfo('e10', 8),
+        'e12' : RegisterInfo('e12', 8),
+        'e14' : RegisterInfo('e14', 8),
+
         # General Address Registers
         'a0' : RegisterInfo('a0', 4),           # System Global Address Register
         'a1' : RegisterInfo('a1', 4),           # System Global Address Register
@@ -73,6 +83,7 @@ class TriCore(Architecture):
         'a15' : RegisterInfo('a15', 4),         # Implicit Base Address Register for many 16-bit load/store ins
 
         # Control Registers
+        'sp'  : RegisterInfo('sp', 4),          # Stack Pointer
         'psw' : RegisterInfo('psw', 4),         # Program Status Word
         'pcxi' : RegisterInfo('pcxi', 4),       # Previous Context Information
         'pc' : RegisterInfo('pc', 4),           # Program Counter (Read Only)
@@ -85,82 +96,155 @@ class TriCore(Architecture):
         'btv' : RegisterInfo('btv', 4),         # Base Address of Trap Vector Table
     }
 
-    stack_pointer = 'a10'
+    stack_pointer = 'sp'
 
     # internal
-    reg32_strs = ['d0', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8', 'd9', 'd10', 'd11', 'd12', 'd13', 'd14', 'd15', 'a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'a11', 'a12', 'a13', 'a14', 'a15', 'psw', 'pcxi', 'pc', 'fcx', 'lcx', 'isp', 'icr', 'pipn', 'biv', 'btv', ]
-    reg_strs = reg32_strs
+    reg32_strs = ['d0', 'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8', 'd9', 'd10', 'd11', 'd12', 'd13', 'd14', 'd15', 'a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'a11', 'a12', 'a13', 'a14', 'a15', 'sp', 'psw', 'pcxi', 'pc', 'fcx', 'lcx', 'isp', 'icr', 'pipn', 'biv', 'btv', ]
+    reg64_strs = ['e0', 'e2', 'e4', 'e8', 'e10', 'e12', 'e14']
+    reg_strs = reg32_strs + reg64_strs
 
     def get_instruction_info(self, data, addr):
+        
         decoded = TCdisasm(data, addr)
+
         if decoded.size == 0:
             return None
-        result = InstructionInfo()
-        result.length = decoded.size
 
-        regexes = [ \
-            r'^j(?:lt|le|gt|ge)\.(?:u|s|a|w) d\d+, (?:#|d)\d+, #(?:0x[0-9a-fA-F]+|\d+)$',	# 0: conditional jump
-            r'^j(?:lt|le|gt|ge) d\d+, (?:#|d)\d+, #(?:0x[0-9a-fA-F]+|\d+)$',	# 1: conditional jump
-            r'^j(?:eq|ne) d\d+, (?:d|#)[0-9a-fA-F]+, #(?:0x[0-9a-fA-F]+|\d+)$',	# 2: conditional jump (not\equal)
-            r'^j(?:z|nz) d\d+, #(?:0x[0-9a-fA-F]+|\d+)$',	# 3: conditional jump (not\zero)
-            r'^j #0x[0-9a-fA-F]+$',				# 4: jump unconditional
-            r'call #0x[0-9a-fA-F]+$',					# 5: unconditional call		eg: CALL #DEAD
-            r'loop a\d+, #-[0-9a-fA-F]+$',					# 6: loop
-            r'loop a\d+, #-0x[0-9a-fA-F]+$',					# 7: loop
-            r'(?:ret|retn|reti)',				# 8: return, return (nmi), return (interrupt)
-            
+        ## Regex List Definitions
+
+        jump_regex = [ \
+            r'^j(?:lt|le|gt|ge)\.(?:u|s|a|w) d\d+, (?:#|d)\d+, #(?:0x[0-9a-fA-F]+|\d+)$',	    # 0: conditional jump
+            r'^j(?:lt|le|gt|ge) d\d+, (?:#|d)\d+, #(?:0x[0-9a-fA-F]+|\d+)$',	                # 1: conditional jump
+            r'^j(?:eq|ne) d\d+, (?:d|#)(-)?[0-9a-fA-F]+, #(?:0x[0-9a-fA-F]+|\d+)$',	            # 2: conditional jump (not\equal)
+            r'^j(?:z|nz) d\d+, #(?:0x[0-9a-fA-F]+|\d+)$',	                                    # 3: conditional jump (not\zero)
+            r'^j(?:z|nz).t d\d+, (?:#|d)\d+, #(?:0x[0-9a-fA-F]+|\d+)$',	                        # 4: conditional jump (not\zero) '.t'
+            r'^j #0x[0-9a-fA-F]+$',				                                                # 5: jump unconditional
+            r'^ja #0x[0-9a-fA-F]+$',				                                            # 6: jump unconditional
+        ]
+
+        call_regex = [ \
+            r'call #0x[0-9a-fA-F]+$',					                                        # 0: unconditional call		eg: CALL #DEAD
+            r'calla #0x[0-9a-fA-F]+$',					                                        # 1: unconditional call		eg: CALL #DEAD
+        ]
+
+        loop_regex = [ \
+            r'loop a\d+, #-[0-9a-fA-F]+$',					                                    # 0: loop
+            r'loop a\d+, #-0x[0-9a-fA-F]+$',				                                    # 1: loop
+            r'loop a\d+, #0x[0-9a-fA-F]+$',					                                    # 2: loop
+            r'loop a\d+, 0x[0-9a-fA-F]+$',					                                    # 3: loop
+        ]
+
+        ret_regex = [ \
+            r'(?:ret|retn|reti)',				                                                # 0: return, return (nmi), return (interrupt)
         ]
 
         m = None
-        for (i,regex) in enumerate(regexes):
+
+        result = InstructionInfo()
+        result.length = decoded.size
+        
+        # Parse jump instructions for branches
+
+        for (i,regex) in enumerate(jump_regex):
             m = re.match(regex, decoded.insnTxt)
             if not m:
                 continue
+            match i:
 
-            # print(f'Matched! "{decoded.insnTxt}" size: {decoded.size} {i}')
-            if i==0 or i==2:
-                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
-                dest = int(hex_match.group(1), 16)
-                result.add_branch(BranchType.TrueBranch, dest)
-                result.add_branch(BranchType.FalseBranch, addr + decoded.size)
-                pass
-            if i==1:
-                hex_match = re.search(r'#([0-9a-fA-F]+)', decoded.insnTxt)
-                dest = int(hex_match.group(1))
-                result.add_branch(BranchType.TrueBranch, dest)
-                result.add_branch(BranchType.FalseBranch, addr + decoded.size)
-                pass
-            if i==3:
-                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
-                dest = int(hex_match.group(1), 16)
-                result.add_branch(BranchType.TrueBranch, dest)
-                result.add_branch(BranchType.FalseBranch, addr + decoded.size)
-                pass
-            elif i==4:
-                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
-                dest = int(hex_match.group(1), 16)
-                result.add_branch(BranchType.UnconditionalBranch, dest)
-                pass
-            elif i==5:
-                hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
-                dest = int(hex_match.group(1), 16)
-                result.add_branch(BranchType.CallDestination, dest)
-                pass
-            elif i==6:
-                hex_match = re.search(r'#(-[0-9a-fA-F]+)', decoded.insnTxt)
-                dest = int(hex_match.group(1))
-                result.add_branch(BranchType.TrueBranch, addr + dest)
-                result.add_branch(BranchType.FalseBranch, addr + decoded.size)
-                pass
-            elif i==7:
-                hex_match = re.search(r'#(-0x[0-9a-fA-F]+)', decoded.insnTxt)
-                dest = int(hex_match.group(1), 16)
-                result.add_branch(BranchType.TrueBranch, addr + dest)
-                result.add_branch(BranchType.FalseBranch, addr + decoded.size)
-                pass
-            elif i==8:
-                result.add_branch(BranchType.FunctionReturn)
+                case w if w in [0, 2]:
+                    hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
+                    dest = int(hex_match.group(1), 16)
+                    result.add_branch(BranchType.TrueBranch, dest)
+                    result.add_branch(BranchType.FalseBranch, addr + decoded.size)
 
+                case 1:
+                    hex_match = re.search(r'#([0-9a-fA-F]+)', decoded.insnTxt)
+                    dest = int(hex_match.group(1))
+                    result.add_branch(BranchType.TrueBranch, dest)
+                    result.add_branch(BranchType.FalseBranch, addr + decoded.size)
+
+                case w if w in [3, 4]:
+                    hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
+                    dest = int(hex_match.group(1), 16)
+                    result.add_branch(BranchType.TrueBranch, dest)
+                    result.add_branch(BranchType.FalseBranch, addr + decoded.size)
+
+                case 5:
+                    hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
+                    dest = int(hex_match.group(1), 16)
+                    result.add_branch(BranchType.UnconditionalBranch, dest)
+
+                case 6:
+                    hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
+                    dest = int(hex_match.group(1), 16) + current_base
+                    result.add_branch(BranchType.UnconditionalBranch, dest)
+                
+            break
+
+
+        # Parse call instructions for branches
+
+        for (i,regex) in enumerate(call_regex):
+            m = re.match(regex, decoded.insnTxt)
+            if not m:
+                continue
+            match i:
+
+                case 0:
+                    hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
+                    dest = int(hex_match.group(1), 16)
+                    result.add_branch(BranchType.CallDestination, dest)
+
+                case 1:
+                    hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
+                    dest = int(hex_match.group(1), 16) + current_base
+                    result.add_branch(BranchType.CallDestination, dest)
+
+            break
+
+        # Parse loop instructions for branches
+
+        for (i,regex) in enumerate(loop_regex):
+            m = re.match(regex, decoded.insnTxt)
+            if not m:
+                continue
+            match i:
+
+                case 0:
+                    hex_match = re.search(r'#(-[0-9a-fA-F]+)', decoded.insnTxt)
+                    dest = int(hex_match.group(1))
+                    result.add_branch(BranchType.TrueBranch, addr + dest)
+                    result.add_branch(BranchType.FalseBranch, addr + decoded.size)
+
+                case 1:
+                    hex_match = re.search(r'#(-0x[0-9a-fA-F]+)', decoded.insnTxt)
+                    dest = int(hex_match.group(1), 16)
+                    result.add_branch(BranchType.TrueBranch, addr + dest)
+                    result.add_branch(BranchType.FalseBranch, addr + decoded.size)
+
+                case 2:
+                    hex_match = re.search(r'#(0x[0-9a-fA-F]+)', decoded.insnTxt)
+                    dest = int(hex_match.group(1), 16)
+                    result.add_branch(BranchType.TrueBranch, dest)
+                    result.add_branch(BranchType.FalseBranch, addr + decoded.size)
+
+                case 3:
+                    hex_match = re.search(r', (0x[0-9a-fA-F]+)', decoded.insnTxt)
+                    dest = int(hex_match.group(1), 16)
+                    result.add_branch(BranchType.TrueBranch, dest)
+                    result.add_branch(BranchType.FalseBranch, addr + decoded.size)
+
+            break
+
+        # Parse return instructions for branches
+
+        for (i,regex) in enumerate(ret_regex):
+            m = re.match(regex, decoded.insnTxt)
+            if not m:
+                continue
+            match i:
+                case 0:
+                    result.add_branch(BranchType.FunctionReturn)
 
             break
 
@@ -174,6 +258,12 @@ class TriCore(Architecture):
         result = []
         atoms = [t for t in re.split(r'([, ()\[\]\+])', decoded.insnTxt) if t] # delimeters kept if in capture group
         result.append(InstructionTextToken(InstructionTextTokenType.InstructionToken, atoms[0]))
+
+        if atoms[0] in ['calla', 'ja']:
+            abs_offset = current_base
+        else:
+            abs_offset = 0x0
+
         if atoms[1:]:
             result.append(InstructionTextToken(InstructionTextTokenType.TextToken, ' '))
 
@@ -181,10 +271,12 @@ class TriCore(Architecture):
         for atom in atoms[1:]:
             if not atom or atom == ' ':
                 continue
-            elif atom in self.reg32_strs:
+            elif atom in self.reg_strs:
                 result.append(InstructionTextToken(InstructionTextTokenType.RegisterToken, atom))
             elif atom[0] == '#':
-                result.append(InstructionTextToken(InstructionTextTokenType.IntegerToken, atom, int(atom[1:],16)))
+                result.append(InstructionTextToken(InstructionTextTokenType.IntegerToken, atom, int(atom[1:],16) + abs_offset))
+            elif atom[0] == '0' and atom[1] == 'x':
+                result.append(InstructionTextToken(InstructionTextTokenType.IntegerToken, atom, int(atom,16)))
             elif atom[0] == '$':
                 if len(atom)==5:
                     result.append(InstructionTextToken(InstructionTextTokenType.PossibleAddressToken, atom, int(atom[1:],16)))
